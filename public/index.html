@@ -417,11 +417,11 @@
               <!-- AI suggested tags -->
               <div x-show="saveForm.suggestedTags.length > 0" class="flex flex-wrap gap-1.5 items-center">
                 <span class="text-xs opacity-60">AI 建议：</span>
-                <template x-for="tag in saveForm.suggestedTags" :key="tag">
+                <template x-for="tag in saveForm.suggestedTags" :key="tag.slug">
                   <button
                     class="badge badge-outline badge-sm cursor-pointer hover:badge-primary transition-colors"
                     @click="addSuggestedTag(tag)"
-                    x-text="tag"
+                    x-text="tag.name"
                   ></button>
                 </template>
               </div>
@@ -784,9 +784,10 @@
               if (this.selectedTags.length) params.set('tags', this.selectedTags.join(','));
               const res = await fetch(`${API_BASE}/api/bookmarks?${params.toString()}`);
               if (!res.ok) throw new Error(`加载失败: HTTP ${res.status}`);
-              const data = await res.json();
-              this.bookmarks = data.bookmarks || data.data || data || [];
-              this.hasMore = data.has_more || (data.bookmarks || data.data || data || []).length === 30;
+              const json = await res.json();
+              if (!json.ok) throw new Error(json.error || 'request failed');
+              this.bookmarks = json.data;
+              this.hasMore = json.data.length === 30;
             } catch (e) {
               this.bookmarksError = e?.message || '加载书签失败，请稍后重试';
             } finally {
@@ -803,13 +804,12 @@
               if (this.selectedTags.length) params.set('tags', this.selectedTags.join(','));
               const res = await fetch(`${API_BASE}/api/bookmarks?${params.toString()}`);
               if (!res.ok) throw new Error(`加载失败: HTTP ${res.status}`);
-              const data = await res.json();
-              const more = data.bookmarks || data.data || data || [];
-              this.bookmarks = [...this.bookmarks, ...more];
-              this.hasMore = data.has_more || more.length === 30;
+              const json = await res.json();
+              const items = json.data;
+              this.bookmarks.push(...items);
+              this.hasMore = items.length === 30;
             } catch (e) {
               Alpine.store('alert').show(e?.message || '加载更多失败', 'error');
-              this.offset -= 30;
             } finally {
               this.isLoadingMore = false;
             }
@@ -850,8 +850,8 @@
             try {
               const res = await fetch(`${API_BASE}/api/tags`);
               if (!res.ok) throw new Error(`加载失败: HTTP ${res.status}`);
-              const data = await res.json();
-              this.allTags = data.tags || data.data || data || [];
+              const json = await res.json();
+              this.allTags = json.data;
             } catch (e) {
               this.tagsError = e?.message || '加载标签失败';
             } finally {
@@ -871,13 +871,13 @@
                 body: JSON.stringify({ url: this.saveForm.url })
               });
               if (!res.ok) throw new Error(`AI 补全失败: HTTP ${res.status}`);
-              const data = await res.json();
-              if (data.title) this.saveForm.title = data.title;
-              if (data.summary) this.saveForm.summary = data.summary;
-              if (data.type) this.saveForm.type = data.type;
-              if (data.suggested_tags && Array.isArray(data.suggested_tags)) {
-                this.saveForm.suggestedTags = data.suggested_tags;
-              }
+              const json = await res.json();
+              const enrich = json.data;
+              if (enrich.title && !this.saveForm.title) this.saveForm.title = enrich.title;
+              if (enrich.summary) this.saveForm.summary = enrich.summary;
+              if (enrich.type) this.saveForm.type = enrich.type;
+              const selectedSlugs = this.saveForm.selectedTags.map(t => t.slug);
+              this.saveForm.suggestedTags = (enrich.tags || []).filter(t => !selectedSlugs.includes(t.slug));
               Alpine.store('alert').show('AI 补全成功', 'success');
             } catch (e) {
               Alpine.store('alert').show(e?.message || 'AI 补全失败', 'error');
@@ -886,32 +886,26 @@
             }
           },
 
-          async addSuggestedTag(tagName) {
-            // Check if tag already in allTags
-            let tag = this.allTags.find(t => t.name === tagName || t.slug === tagName);
-            if (!tag) {
-              // Create it
+          async addSuggestedTag(tag) {
+            // tag is { slug, name, confidence }
+            let found = this.allTags.find(t => t.slug === tag.slug);
+            if (!found) {
               try {
-                const res = await fetch(`${API_BASE}/api/tags`, {
+                const resp = await fetch(`${API_BASE}/api/tags`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name: tagName })
+                  body: JSON.stringify({ name: tag.name }),
                 });
-                if (!res.ok) throw new Error(`创建标签失败: HTTP ${res.status}`);
-                const data = await res.json();
-                tag = data.tag || data;
-                this.allTags.push(tag);
-              } catch (e) {
-                Alpine.store('alert').show(e?.message || '创建标签失败', 'error');
-                return;
-              }
+                if (!resp.ok) throw new Error();
+                const { data } = await resp.json();
+                found = data;
+                this.allTags.unshift(data);
+              } catch { return; }
             }
-            // Avoid duplicates in selected
-            if (!this.saveForm.selectedTags.find(t => t.id === tag.id)) {
-              this.saveForm.selectedTags.push(tag);
+            if (!this.saveForm.selectedTags.find(t => t.id === found.id)) {
+              this.saveForm.selectedTags.push(found);
             }
-            // Remove from suggested
-            this.saveForm.suggestedTags = this.saveForm.suggestedTags.filter(t => t !== tagName);
+            this.saveForm.suggestedTags = this.saveForm.suggestedTags.filter(t => t.slug !== tag.slug);
           },
 
           filterTagSuggestions() {
@@ -978,8 +972,8 @@
                 body: JSON.stringify(payload)
               });
               if (!res.ok) throw new Error(`保存失败: HTTP ${res.status}`);
-              this.$refs.saveModal.close();
               this.resetSaveForm();
+              this.$refs.saveModal.close();
               await this.fetchBookmarks();
               await this.fetchTags();
               Alpine.store('alert').show('书签保存成功', 'success');
