@@ -31,7 +31,7 @@ tags.post('/', async (c) => {
   if (!slug) return errorResponse(c, 400, 'invalid tag name')
 
   const db = c.env.DB
-  const { results: [existing] } = await db.prepare(`SELECT id FROM tags WHERE slug = ?`).bind(slug).all()
+  const { results: [existing] } = await db.prepare(`SELECT * FROM tags WHERE slug = ?`).bind(slug).all()
   if (existing) return c.json({ ok: true, data: existing }) // 幂等：slug 已存在直接返回
 
   const id = generateId()
