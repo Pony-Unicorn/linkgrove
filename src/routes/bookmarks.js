@@ -81,10 +81,26 @@ bookmarks.post('/', async (c) => {
 
   const tagIds = body.tag_ids || []
 
+  // Check for duplicate canonical_url
+  const { results: [dup] } = await db.prepare(
+    `SELECT id, url, title FROM bookmarks WHERE canonical_url = ?`
+  ).bind(canonical).all()
+  if (dup) return c.json({ ok: false, error: 'bookmark already exists', existing: dup }, 409)
+
   await db.prepare(
     `INSERT INTO bookmarks (id, url, canonical_url, title, domain, summary, note, type, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(id, rawUrl, canonical, body.title || rawUrl, domain, body.summary || '', body.note || '', body.type || 'other', ts, ts).run()
+
+  if (tagIds.length > 0) {
+    const placeholders = tagIds.map(() => '?').join(',')
+    const { results: validTags } = await db.prepare(
+      `SELECT id FROM tags WHERE id IN (${placeholders})`
+    ).bind(...tagIds).all()
+    const validIds = new Set(validTags.map(t => t.id))
+    const invalidIds = tagIds.filter(id => !validIds.has(id))
+    if (invalidIds.length > 0) return errorResponse(c, 400, `invalid tag ids: ${invalidIds.join(', ')}`)
+  }
 
   for (const tagId of tagIds) {
     await db.prepare(
@@ -106,15 +122,24 @@ bookmarks.put('/:id', async (c) => {
   const db = c.env.DB
   const ts = now()
 
-  const { results: [existing] } = await db.prepare(`SELECT id FROM bookmarks WHERE id = ?`).bind(id).all()
+  const { results: [existing] } = await db.prepare(`SELECT id, title FROM bookmarks WHERE id = ?`).bind(id).all()
   if (!existing) return errorResponse(c, 404, 'bookmark not found')
 
   await db.prepare(
     `UPDATE bookmarks SET title=?, summary=?, note=?, type=?, updated_at=? WHERE id=?`
-  ).bind(body.title, body.summary || '', body.note || '', body.type || 'other', ts, id).run()
+  ).bind(body.title ?? existing.title, body.summary || '', body.note || '', body.type || 'other', ts, id).run()
 
   // 更新 tags：先清除 user 来源的，再重新写入
   if (Array.isArray(body.tag_ids)) {
+    if (body.tag_ids.length > 0) {
+      const placeholders = body.tag_ids.map(() => '?').join(',')
+      const { results: validTags } = await db.prepare(
+        `SELECT id FROM tags WHERE id IN (${placeholders})`
+      ).bind(...body.tag_ids).all()
+      const validIds = new Set(validTags.map(t => t.id))
+      const invalidIds = body.tag_ids.filter(id => !validIds.has(id))
+      if (invalidIds.length > 0) return errorResponse(c, 400, `invalid tag ids: ${invalidIds.join(', ')}`)
+    }
     await db.prepare(`DELETE FROM bookmark_tags WHERE bookmark_id = ? AND source = 'user'`).bind(id).run()
     for (const tagId of body.tag_ids) {
       await db.prepare(
