@@ -21,6 +21,7 @@ bookmarks.get('/', async (c) => {
   const tagList = tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : []
 
   if (tagList.length > 0) {
+    // Alias names bt0/tg0 etc. are loop counters, not user input - safe from injection
     for (let i = 0; i < tagList.length; i++) {
       sql += ` JOIN bookmark_tags bt${i} ON bt${i}.bookmark_id = b.id
                JOIN tags tg${i} ON tg${i}.id = bt${i}.tag_id AND bt${i}.status = 'active'`
@@ -87,11 +88,6 @@ bookmarks.post('/', async (c) => {
   ).bind(canonical).all()
   if (dup) return c.json({ ok: false, error: 'bookmark already exists', existing: dup }, 409)
 
-  await db.prepare(
-    `INSERT INTO bookmarks (id, url, canonical_url, title, domain, summary, note, type, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, rawUrl, canonical, body.title || rawUrl, domain, body.summary || '', body.note || '', body.type || 'other', ts, ts).run()
-
   if (tagIds.length > 0) {
     const placeholders = tagIds.map(() => '?').join(',')
     const { results: validTags } = await db.prepare(
@@ -101,6 +97,11 @@ bookmarks.post('/', async (c) => {
     const invalidIds = tagIds.filter(id => !validIds.has(id))
     if (invalidIds.length > 0) return errorResponse(c, 400, `invalid tag ids: ${invalidIds.join(', ')}`)
   }
+
+  await db.prepare(
+    `INSERT INTO bookmarks (id, url, canonical_url, title, domain, summary, note, type, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, rawUrl, canonical, body.title || rawUrl, domain, body.summary || '', body.note || '', body.type || 'other', ts, ts).run()
 
   for (const tagId of tagIds) {
     await db.prepare(

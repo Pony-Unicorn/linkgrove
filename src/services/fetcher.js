@@ -39,7 +39,7 @@ export async function fetchPageMeta(url) {
       .text() // 消费响应体触发 HTMLRewriter
 
   } catch (e) {
-    // 抓取失败时降级，返回空值
+    console.warn('[fetchPageMeta] failed to fetch', url, e?.message)
   }
 
   return {

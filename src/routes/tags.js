@@ -32,7 +32,17 @@ tags.post('/', async (c) => {
 
   const db = c.env.DB
   const { results: [existing] } = await db.prepare(`SELECT * FROM tags WHERE slug = ?`).bind(slug).all()
-  if (existing) return c.json({ ok: true, data: existing }) // 幂等：slug 已存在直接返回
+  if (existing) {
+    const { results: [tagWithCount] } = await db.prepare(
+      `SELECT t.id, t.name, t.slug, t.created_at, t.updated_at,
+              COUNT(bt.tag_id) as usage_count
+       FROM tags t
+       LEFT JOIN bookmark_tags bt ON bt.tag_id = t.id AND bt.status = 'active'
+       WHERE t.id = ?
+       GROUP BY t.id`
+    ).bind(existing.id).all()
+    return c.json({ ok: true, data: tagWithCount })
+  }
 
   const id = generateId()
   const ts = now()
