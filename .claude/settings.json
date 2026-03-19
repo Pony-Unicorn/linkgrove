@@ -1,0 +1,7 @@
+{
+  "attribution": {},
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "cloudflare@cloudflare": true
+  }
+}
