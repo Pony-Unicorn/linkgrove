@@ -17,7 +17,7 @@ tags.get('/', async (c) => {
     sql += ` WHERE t.name LIKE ? OR t.slug LIKE ?`
     params.push(`%${q}%`, `%${q}%`)
   }
-  sql += ` GROUP BY t.id ORDER BY usage_count DESC, t.name ASC`
+  sql += ` GROUP BY t.id ORDER BY usage_count DESC, t.name ASC LIMIT 500`
   const { results } = await db.prepare(sql).bind(...params).all()
   return c.json({ ok: true, data: results })
 })
@@ -54,6 +54,7 @@ tags.put('/:id', async (c) => {
   if (!existing) return errorResponse(c, 404, 'tag not found')
 
   const newSlug = toSlug(body.name)
+  if (!newSlug) return errorResponse(c, 400, 'invalid tag name')
   const { results: [conflict] } = await db.prepare(`SELECT id FROM tags WHERE slug = ? AND id != ?`).bind(newSlug, id).all()
   if (conflict) return errorResponse(c, 409, 'slug already exists')
 
