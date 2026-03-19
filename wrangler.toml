@@ -11,7 +11,7 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "linkgrove"
-database_id = "REPLACE_AFTER_CREATE"
+database_id = "4ed0165b-a38a-4a20-8a85-1d58fe051673"
 
 [ai]
 binding = "AI"
