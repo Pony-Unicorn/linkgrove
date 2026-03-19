@@ -1,0 +1,17 @@
+name = "linkgrove"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "linkgrove"
+database_id = "REPLACE_AFTER_CREATE"
+
+[ai]
+binding = "AI"
