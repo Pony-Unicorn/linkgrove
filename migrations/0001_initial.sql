@@ -3,12 +3,12 @@
 CREATE TABLE IF NOT EXISTS bookmarks (
   id          TEXT PRIMARY KEY,
   url         TEXT NOT NULL,
-  canonical_url TEXT NOT NULL,
+  canonical_url TEXT NOT NULL UNIQUE,
   title       TEXT NOT NULL DEFAULT '',
   domain      TEXT NOT NULL DEFAULT '',
   summary     TEXT NOT NULL DEFAULT '',
   note        TEXT NOT NULL DEFAULT '',
-  type        TEXT NOT NULL DEFAULT 'other',
+  type        TEXT NOT NULL DEFAULT 'other' CHECK (type IN ('article', 'video', 'tool', 'docs', 'paper', 'other')),
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -24,14 +24,13 @@ CREATE TABLE IF NOT EXISTS tags (
   updated_at  INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_tags_slug ON tags(slug);
 
 CREATE TABLE IF NOT EXISTS bookmark_tags (
   bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,
   tag_id      TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-  source      TEXT NOT NULL DEFAULT 'user',   -- user | ai | rule
+  source      TEXT NOT NULL DEFAULT 'user' CHECK (source IN ('user', 'ai', 'rule')),   -- user | ai | rule
   confidence  REAL,
-  status      TEXT NOT NULL DEFAULT 'active', -- active | rejected
+  status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'rejected')), -- active | rejected
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (bookmark_id, tag_id)
 );
