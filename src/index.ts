@@ -786,7 +786,6 @@ app.post('/api/ai/enrich', async (c) => {
     const resp = (await c.env.AI.run('@cf/meta/llama-3.1-8b-instruct' as Parameters<Ai['run']>[0], {
       prompt: AI_PROMPT(title, description, body.url as string),
       max_tokens: 512,
-      response_format: { type: 'json_object' },
     })) as AiTextOutput
     const match = (resp.response || '').match(/\{[\s\S]*\}/)
     if (match) aiResult = JSON.parse(match[0]) as Record<string, unknown>
