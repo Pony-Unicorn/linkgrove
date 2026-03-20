@@ -59,6 +59,26 @@
             </label>
           </div>
 
+          <!-- Advanced filter toggle -->
+          <button class="btn btn-ghost btn-sm shrink-0" @click="showAdvancedFilter = !showAdvancedFilter" title="高级过滤">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true">
+              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+            </svg>
+          </button>
+
+          <!-- Batch mode toggle -->
+          <button
+            class="btn btn-sm shrink-0"
+            :class="isBatchMode ? 'btn-secondary' : 'btn-ghost'"
+            @click="toggleBatchMode()"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true">
+              <rect x="3" y="5" width="4" height="4" rx="1"></rect><rect x="3" y="13" width="4" height="4" rx="1"></rect>
+              <line x1="10" y1="7" x2="21" y2="7"></line><line x1="10" y1="15" x2="21" y2="15"></line>
+            </svg>
+            <span x-text="isBatchMode ? '退出批量' : '批量'"></span>
+          </button>
+
           <!-- Save button -->
           <button
             class="btn btn-primary btn-sm shrink-0"
@@ -72,6 +92,25 @@
           </button>
         </div>
       </header>
+
+      <!-- Advanced Filter Bar -->
+      <div x-show="showAdvancedFilter" x-transition class="border-b border-base-300 bg-base-100">
+        <div class="max-w-7xl mx-auto px-4 md:px-6 py-3 flex flex-wrap gap-3 items-end">
+          <label class="flex flex-col gap-1">
+            <span class="text-xs opacity-60">域名</span>
+            <input type="text" class="input input-bordered input-xs w-36" placeholder="github.com" x-model="domainFilter" @change="fetchBookmarks()" />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs opacity-60">开始日期</span>
+            <input type="date" class="input input-bordered input-xs" x-model="dateFrom" @change="fetchBookmarks()" />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs opacity-60">结束日期</span>
+            <input type="date" class="input input-bordered input-xs" x-model="dateTo" @change="fetchBookmarks()" />
+          </label>
+          <button class="btn btn-ghost btn-xs" @click="domainFilter=''; dateFrom=''; dateTo=''; fetchBookmarks()">清除</button>
+        </div>
+      </div>
 
       <!-- Global Alert -->
       <div class="relative z-20">
@@ -139,8 +178,13 @@
                 <template x-for="tag in allTags" :key="tag.id">
                   <button
                     class="w-full text-left btn btn-xs justify-between"
-                    :class="selectedTags.includes(tag.slug) ? 'btn-primary' : 'btn-ghost'"
-                    @click="toggleTag(tag.slug)"
+                    :class="{
+                      'btn-primary': selectedTags.includes(tag.slug),
+                      'btn-error btn-outline': excludedTags.includes(tag.slug),
+                      'btn-ghost': !selectedTags.includes(tag.slug) && !excludedTags.includes(tag.slug)
+                    }"
+                    @click="$event.shiftKey ? toggleExcludeTag(tag.slug) : toggleTag(tag.slug)"
+                    :title="'Shift+点击排除 ' + tag.name"
                   >
                     <span class="truncate" x-text="tag.name"></span>
                     <span class="badge badge-xs ml-1 shrink-0" x-text="tag.usage_count"></span>
@@ -164,13 +208,69 @@
               </div>
             </div>
           </div>
+
+          <!-- Saved Queries Card -->
+          <div class="card bg-base-100 border border-base-300 shadow-sm">
+            <div class="card-body p-4 gap-3">
+              <div class="flex items-center justify-between">
+                <h2 class="font-semibold text-sm">智能集合</h2>
+                <button
+                  class="btn btn-ghost btn-xs"
+                  title="保存当前筛选"
+                  :disabled="isSavingQuery"
+                  @click="
+                    const name = prompt('集合名称：');
+                    if (name && name.trim()) saveCurrentQuery(name.trim());
+                  "
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3" aria-hidden="true">
+                    <path d="M5 12h14"></path><path d="M12 5v14"></path>
+                  </svg>
+                </button>
+              </div>
+
+              <div x-show="isLoadingSavedQueries" class="space-y-2">
+                <div class="skeleton h-7 w-full rounded-btn"></div>
+                <div class="skeleton h-7 w-4/5 rounded-btn"></div>
+              </div>
+
+              <div x-show="!isLoadingSavedQueries" class="space-y-1">
+                <template x-for="sq in savedQueries" :key="sq.id">
+                  <div class="flex items-center gap-1 group">
+                    <button
+                      class="flex-1 text-left btn btn-xs btn-ghost justify-start truncate"
+                      @click="applyQuery(sq)"
+                    >
+                      <svg x-show="sq.pinned" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-3 h-3 text-warning shrink-0" aria-hidden="true">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+                      </svg>
+                      <span class="truncate" x-text="sq.name"></span>
+                    </button>
+                    <div class="hidden group-hover:flex items-center gap-0.5 shrink-0">
+                      <button class="btn btn-ghost btn-xs btn-square" @click="togglePinQuery(sq)" :title="sq.pinned ? '取消置顶' : '置顶'">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3" aria-hidden="true">
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+                        </svg>
+                      </button>
+                      <button class="btn btn-ghost btn-xs btn-square text-error" @click="deleteQuery(sq)" title="删除">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3" aria-hidden="true">
+                          <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="savedQueries.length === 0" class="text-xs opacity-50 text-center py-2">暂无智能集合</div>
+              </div>
+            </div>
+          </div>
         </aside>
 
         <!-- Main Content -->
         <main class="flex-1 min-w-0 space-y-4">
 
           <!-- Filter status bar -->
-          <div x-show="selectedTags.length > 0" class="flex flex-wrap gap-2 items-center">
+          <div x-show="selectedTags.length > 0 || excludedTags.length > 0" class="flex flex-wrap gap-2 items-center">
             <span class="text-sm opacity-60">筛选：</span>
             <template x-for="slug in selectedTags" :key="slug">
               <span class="badge badge-primary gap-1">
@@ -183,6 +283,69 @@
                 </button>
               </span>
             </template>
+            <template x-for="slug in excludedTags" :key="'not-' + slug">
+              <span class="badge badge-error badge-outline gap-1">
+                <span class="opacity-70 text-xs">NOT</span>
+                <span x-text="allTags.find(t => t.slug === slug)?.name || slug"></span>
+                <button @click="toggleExcludeTag(slug)" class="hover:opacity-70" aria-label="移除排除">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3" aria-hidden="true">
+                    <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
+                  </svg>
+                </button>
+              </span>
+            </template>
+          </div>
+
+          <!-- Batch toolbar -->
+          <div x-show="isBatchMode" class="flex items-center gap-2 flex-wrap p-3 bg-base-100 rounded-box border border-base-300 mb-3">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="checkbox checkbox-sm"
+                :checked="selectedBookmarkIds.length === bookmarks.length && bookmarks.length > 0"
+                @change="toggleSelectAll()"
+              />
+              <span class="text-sm" x-text="selectedBookmarkIds.length ? `已选 ${selectedBookmarkIds.length} 个` : '全选'"></span>
+            </label>
+
+            <div class="flex-1"></div>
+
+            <!-- Batch tag -->
+            <div class="relative" x-show="selectedBookmarkIds.length > 0">
+              <div class="flex gap-1">
+                <input
+                  type="text"
+                  class="input input-bordered input-xs w-32"
+                  placeholder="搜索标签..."
+                  x-model="batchTagInput"
+                  @input="filterBatchTagSuggestions()"
+                />
+              </div>
+              <div
+                x-show="batchTagInput && batchTagSearchResults.length > 0"
+                class="absolute top-full left-0 z-50 mt-1 bg-base-100 border border-base-300 rounded-box shadow-lg max-h-40 overflow-y-auto w-40"
+              >
+                <template x-for="tag in batchTagSearchResults" :key="tag.id">
+                  <button
+                    class="w-full text-left px-3 py-1.5 text-sm hover:bg-base-200"
+                    :disabled="isBatchTagging"
+                    @click="handleBatchAddTag(tag)"
+                    x-text="tag.name"
+                  ></button>
+                </template>
+              </div>
+            </div>
+
+            <button
+              class="btn btn-error btn-sm"
+              :class="{ 'loading': isBatchDeleting }"
+              :disabled="selectedBookmarkIds.length === 0 || isBatchDeleting"
+              @click="handleBatchDelete()"
+            >
+              <svg x-show="!isBatchDeleting" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+              </svg>
+              <span x-text="selectedBookmarkIds.length ? `删除 (${selectedBookmarkIds.length})` : '删除'"></span>
+            </button>
           </div>
 
           <!-- Bookmark skeleton -->
@@ -235,67 +398,79 @@
           <div x-show="!isLoadingBookmarks && !bookmarksError && bookmarks.length > 0" class="space-y-3">
             <template x-for="bm in bookmarks" :key="bm.id">
               <article class="card bg-base-100 border border-base-300 shadow-sm hover:border-base-content/20 transition-colors">
-                <div class="card-body p-4 gap-2">
-                  <!-- Title & domain row -->
-                  <div class="flex items-start justify-between gap-2">
-                    <div class="min-w-0 flex-1">
-                      <a
-                        :href="bm.url"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="font-medium text-base leading-snug hover:text-primary transition-colors line-clamp-2"
-                        x-text="bm.title || bm.url"
-                      ></a>
-                      <div class="flex items-center gap-2 mt-0.5">
-                        <span class="text-xs opacity-50" x-text="bm.domain"></span>
-                        <span class="text-xs opacity-30">·</span>
-                        <span class="badge badge-xs badge-outline opacity-60" x-text="bm.type" x-show="bm.type && bm.type !== 'other'"></span>
+                <div class="card-body p-4 gap-2 flex-row">
+                  <!-- Batch checkbox -->
+                  <div x-show="isBatchMode" class="pt-1 shrink-0">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-sm"
+                      :checked="selectedBookmarkIds.includes(bm.id)"
+                      @change="toggleBookmarkSelect(bm.id)"
+                    />
+                  </div>
+                  <!-- Existing content wrapper -->
+                  <div class="flex-1 min-w-0 flex flex-col gap-2">
+                    <!-- Title & domain row -->
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0 flex-1">
+                        <a
+                          :href="bm.url"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="font-medium text-base leading-snug hover:text-primary transition-colors line-clamp-2"
+                          x-text="bm.title || bm.url"
+                        ></a>
+                        <div class="flex items-center gap-2 mt-0.5">
+                          <span class="text-xs opacity-50" x-text="bm.domain"></span>
+                          <span class="text-xs opacity-30">·</span>
+                          <span class="badge badge-xs badge-outline opacity-60" x-text="bm.type" x-show="bm.type && bm.type !== 'other'"></span>
+                        </div>
+                      </div>
+                      <!-- Action buttons -->
+                      <div class="flex items-center gap-1 shrink-0">
+                        <button
+                          class="btn btn-ghost btn-xs btn-square"
+                          @click="openEditModal(bm)"
+                          title="编辑"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5" aria-hidden="true">
+                            <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+                          </svg>
+                        </button>
+                        <button
+                          class="btn btn-ghost btn-xs btn-square text-error"
+                          @click="deleteBookmark(bm.id)"
+                          title="删除"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5" aria-hidden="true">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                            <path d="M10 11v6"></path>
+                            <path d="M14 11v6"></path>
+                            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                          </svg>
+                        </button>
                       </div>
                     </div>
-                    <!-- Action buttons -->
-                    <div class="flex items-center gap-1 shrink-0">
-                      <button
-                        class="btn btn-ghost btn-xs btn-square"
-                        @click="openEditModal(bm)"
-                        title="编辑"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5" aria-hidden="true">
-                          <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-                        </svg>
-                      </button>
-                      <button
-                        class="btn btn-ghost btn-xs btn-square text-error"
-                        @click="deleteBookmark(bm.id)"
-                        title="删除"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5" aria-hidden="true">
-                          <polyline points="3 6 5 6 21 6"></polyline>
-                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
-                          <path d="M10 11v6"></path>
-                          <path d="M14 11v6"></path>
-                          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
-                        </svg>
-                      </button>
+
+                    <!-- Summary -->
+                    <p x-show="bm.summary" class="text-sm opacity-70 line-clamp-2" x-text="bm.summary"></p>
+
+                    <!-- Note -->
+                    <p x-show="bm.note" class="text-xs opacity-50 italic line-clamp-2" x-text="'备注: ' + bm.note"></p>
+
+                    <!-- Tags + date row -->
+                    <div class="flex flex-wrap items-center gap-1.5 mt-1">
+                      <template x-for="tag in (bm.tags || [])" :key="tag.id">
+                        <button
+                          class="badge badge-sm gap-1 cursor-pointer hover:badge-primary transition-colors"
+                          :class="selectedTags.includes(tag.slug) ? 'badge-primary' : 'badge-ghost'"
+                          @click="toggleTag(tag.slug)"
+                          x-text="tag.name"
+                        ></button>
+                      </template>
+                      <span class="ml-auto text-xs opacity-40" x-text="formatDate(bm.created_at)"></span>
                     </div>
-                  </div>
-
-                  <!-- Summary -->
-                  <p x-show="bm.summary" class="text-sm opacity-70 line-clamp-2" x-text="bm.summary"></p>
-
-                  <!-- Note -->
-                  <p x-show="bm.note" class="text-xs opacity-50 italic line-clamp-2" x-text="'备注: ' + bm.note"></p>
-
-                  <!-- Tags + date row -->
-                  <div class="flex flex-wrap items-center gap-1.5 mt-1">
-                    <template x-for="tag in (bm.tags || [])" :key="tag.id">
-                      <button
-                        class="badge badge-sm gap-1 cursor-pointer hover:badge-primary transition-colors"
-                        :class="selectedTags.includes(tag.slug) ? 'badge-primary' : 'badge-ghost'"
-                        @click="toggleTag(tag.slug)"
-                        x-text="tag.name"
-                      ></button>
-                    </template>
-                    <span class="ml-auto text-xs opacity-40" x-text="formatDate(bm.created_at)"></span>
                   </div>
                 </div>
               </article>
@@ -652,8 +827,20 @@
                   <button class="btn btn-xs btn-ghost shrink-0" @click="editingTagId = null">取消</button>
                 </div>
 
+                <!-- Merge inline UI -->
+                <div x-show="mergingTagId === tag.id" class="flex items-center gap-1 flex-1">
+                  <select class="select select-bordered select-xs flex-1" x-model="mergeTargetId">
+                    <option value="">选择合并目标...</option>
+                    <template x-for="t in allTags.filter(t => t.id !== tag.id)" :key="t.id">
+                      <option :value="t.id" x-text="t.name"></option>
+                    </template>
+                  </select>
+                  <button class="btn btn-xs btn-primary" :disabled="!mergeTargetId || isMerging" @click="handleMerge()">确认</button>
+                  <button class="btn btn-xs btn-ghost" @click="mergingTagId = null">取消</button>
+                </div>
+
                 <!-- Action buttons (normal view) -->
-                <div x-show="editingTagId !== tag.id" class="flex items-center gap-1 shrink-0">
+                <div x-show="editingTagId !== tag.id && mergingTagId !== tag.id" class="flex items-center gap-1 shrink-0">
                   <button
                     class="btn btn-ghost btn-xs btn-square"
                     @click="startEditTag(tag)"
@@ -661,6 +848,17 @@
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5" aria-hidden="true">
                       <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+                    </svg>
+                  </button>
+                  <button class="btn btn-ghost btn-xs btn-square" @click="startMerge(tag)" title="合并到...">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5" aria-hidden="true">
+                      <circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M6 21V9a9 9 0 0 0 9 9"></path>
+                    </svg>
+                  </button>
+                  <button class="btn btn-ghost btn-xs btn-square" @click="openAliasManager(tag)" title="别名">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5" aria-hidden="true">
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
                     </svg>
                   </button>
                   <button
@@ -686,6 +884,56 @@
             <form method="dialog">
               <button class="btn">关闭</button>
             </form>
+          </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+      </dialog>
+
+      <!-- ==================== Alias Management Modal ==================== -->
+      <dialog x-ref="aliasModal" class="modal">
+        <div class="modal-box w-11/12 max-w-md">
+          <form method="dialog">
+            <button class="btn btn-sm btn-circle btn-ghost absolute right-3 top-3">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true">
+                <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
+              </svg>
+            </button>
+          </form>
+          <h3 class="font-bold text-lg mb-1">管理别名</h3>
+          <p class="text-sm opacity-60 mb-4" x-text="'标签：' + (allTags.find(t => t.id === aliasTagId)?.name || '')"></p>
+
+          <div class="flex gap-2 mb-4">
+            <input
+              type="text"
+              class="input input-bordered input-sm flex-1"
+              placeholder="输入别名..."
+              x-model="aliasInput"
+              @keydown.enter.prevent="handleAddAlias()"
+            />
+            <button
+              class="btn btn-sm btn-primary shrink-0"
+              :disabled="!aliasInput.trim() || isAddingAlias"
+              @click="handleAddAlias()"
+            >添加</button>
+          </div>
+
+          <div class="space-y-2 max-h-60 overflow-y-auto">
+            <div x-show="isLoadingAliases" class="text-sm opacity-50 text-center py-4">加载中...</div>
+            <template x-for="alias in tagAliases" :key="alias.id">
+              <div class="flex items-center justify-between p-2 rounded-lg bg-base-200">
+                <span class="text-sm" x-text="alias.alias"></span>
+                <button class="btn btn-ghost btn-xs btn-square text-error" @click="handleDeleteAlias(alias)">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3" aria-hidden="true">
+                    <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
+                  </svg>
+                </button>
+              </div>
+            </template>
+            <div x-show="!isLoadingAliases && tagAliases.length === 0" class="text-sm opacity-50 text-center py-4">暂无别名</div>
+          </div>
+
+          <div class="modal-action">
+            <form method="dialog"><button class="btn">关闭</button></form>
           </div>
         </div>
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
@@ -725,6 +973,19 @@
           bookmarksError: '',
           searchQuery: '',
           selectedTags: [],
+          // Batch operation state
+          selectedBookmarkIds: [],
+          isBatchMode: false,
+          isBatchDeleting: false,
+          isBatchTagging: false,
+          batchTagInput: '',
+          batchTagSearchResults: [],
+          // Advanced filter state
+          excludedTags: [],
+          domainFilter: '',
+          dateFrom: '',
+          dateTo: '',
+          showAdvancedFilter: false,
           offset: 0,
           hasMore: false,
           isLoadingMore: false,
@@ -733,6 +994,12 @@
           allTags: [],
           isLoadingTags: false,
           tagsError: '',
+
+          // Saved queries state
+          savedQueries: [],
+          isLoadingSavedQueries: false,
+          isSavingQuery: false,
+          processingQueryIds: new Set(),
 
           // Save modal state
           saveForm: {
@@ -768,8 +1035,18 @@
           editingTagId: null,
           editingTagName: '',
 
+          // Tag merge / alias state
+          mergingTagId: null,
+          mergeTargetId: '',
+          isMerging: false,
+          aliasTagId: null,
+          aliasInput: '',
+          tagAliases: [],
+          isLoadingAliases: false,
+          isAddingAlias: false,
+
           async init() {
-            await Promise.all([this.fetchBookmarks(), this.fetchTags()]);
+            await Promise.all([this.fetchBookmarks(), this.fetchTags(), this.fetchSavedQueries()]);
           },
 
           // ---- Bookmark fetching ----
@@ -782,6 +1059,10 @@
               const params = new URLSearchParams({ limit: '30', offset: '0' });
               if (this.searchQuery.trim()) params.set('q', this.searchQuery.trim());
               if (this.selectedTags.length) params.set('tags', this.selectedTags.join(','));
+              if (this.excludedTags.length) params.set('not_tags', this.excludedTags.join(','));
+              if (this.domainFilter.trim()) params.set('domain', this.domainFilter.trim());
+              if (this.dateFrom) params.set('from', String(dayjs(this.dateFrom).unix()));
+              if (this.dateTo) params.set('to', String(dayjs(this.dateTo).endOf('day').unix()));
               const res = await fetch(`${API_BASE}/api/bookmarks?${params.toString()}`);
               if (!res.ok) throw new Error(`加载失败: HTTP ${res.status}`);
               const json = await res.json();
@@ -802,6 +1083,10 @@
               const params = new URLSearchParams({ limit: '30', offset: String(this.offset) });
               if (this.searchQuery.trim()) params.set('q', this.searchQuery.trim());
               if (this.selectedTags.length) params.set('tags', this.selectedTags.join(','));
+              if (this.excludedTags.length) params.set('not_tags', this.excludedTags.join(','));
+              if (this.domainFilter.trim()) params.set('domain', this.domainFilter.trim());
+              if (this.dateFrom) params.set('from', String(dayjs(this.dateFrom).unix()));
+              if (this.dateTo) params.set('to', String(dayjs(this.dateTo).endOf('day').unix()));
               const res = await fetch(`${API_BASE}/api/bookmarks?${params.toString()}`);
               if (!res.ok) throw new Error(`加载失败: HTTP ${res.status}`);
               const json = await res.json();
@@ -828,6 +1113,91 @@
           clearTagFilter() {
             this.selectedTags = [];
             this.fetchBookmarks();
+          },
+
+          toggleExcludeTag(slug) {
+            // Remove from selectedTags first (can't both select and exclude)
+            this.selectedTags = this.selectedTags.filter(s => s !== slug);
+            const idx = this.excludedTags.indexOf(slug);
+            if (idx === -1) {
+              this.excludedTags.push(slug);
+            } else {
+              this.excludedTags.splice(idx, 1);
+            }
+            this.fetchBookmarks();
+          },
+
+          toggleBatchMode() {
+            this.isBatchMode = !this.isBatchMode;
+            if (!this.isBatchMode) this.selectedBookmarkIds = [];
+          },
+
+          toggleBookmarkSelect(id) {
+            const idx = this.selectedBookmarkIds.indexOf(id);
+            if (idx === -1) this.selectedBookmarkIds.push(id);
+            else this.selectedBookmarkIds.splice(idx, 1);
+          },
+
+          toggleSelectAll() {
+            if (this.selectedBookmarkIds.length === this.bookmarks.length) {
+              this.selectedBookmarkIds = [];
+            } else {
+              this.selectedBookmarkIds = this.bookmarks.map(b => b.id);
+            }
+          },
+
+          async handleBatchDelete() {
+            if (!this.selectedBookmarkIds.length || this.isBatchDeleting) return;
+            if (!confirm(`确认删除选中的 ${this.selectedBookmarkIds.length} 个书签？`)) return;
+            this.isBatchDeleting = true;
+            try {
+              await Promise.all(
+                this.selectedBookmarkIds.map(id =>
+                  fetch(`${API_BASE}/api/bookmarks/${id}`, { method: 'DELETE' })
+                )
+              );
+              this.selectedBookmarkIds = [];
+              Alpine.store('alert').show('批量删除成功', 'success');
+              await this.fetchBookmarks();
+              await this.fetchTags();
+            } catch {
+              Alpine.store('alert').show('部分删除失败', 'error');
+            } finally {
+              this.isBatchDeleting = false;
+            }
+          },
+
+          filterBatchTagSuggestions() {
+            const q = this.batchTagInput.trim().toLowerCase();
+            if (!q) { this.batchTagSearchResults = []; return; }
+            this.batchTagSearchResults = this.allTags.filter(t => t.name.toLowerCase().includes(q));
+          },
+
+          async handleBatchAddTag(tag) {
+            if (!this.selectedBookmarkIds.length || this.isBatchTagging) return;
+            this.isBatchTagging = true;
+            try {
+              for (const bmId of this.selectedBookmarkIds) {
+                const bm = this.bookmarks.find(b => b.id === bmId);
+                if (!bm) continue;
+                const currentTagIds = (bm.tags || []).map(t => t.id);
+                if (currentTagIds.includes(tag.id)) continue;
+                await fetch(`${API_BASE}/api/bookmarks/${bmId}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ tag_ids: [...currentTagIds, tag.id] }),
+                });
+              }
+              this.batchTagInput = '';
+              this.batchTagSearchResults = [];
+              await this.fetchBookmarks();
+              await this.fetchTags();
+              Alpine.store('alert').show(`已为选中书签添加标签「${tag.name}」`, 'success');
+            } catch {
+              Alpine.store('alert').show('批量打标签失败', 'error');
+            } finally {
+              this.isBatchTagging = false;
+            }
           },
 
           async deleteBookmark(id) {
@@ -859,6 +1229,92 @@
             }
           },
 
+          // ---- Saved queries ----
+
+          async fetchSavedQueries() {
+            this.isLoadingSavedQueries = true;
+            try {
+              const res = await fetch(`${API_BASE}/api/saved-queries`);
+              if (!res.ok) throw new Error();
+              const json = await res.json();
+              this.savedQueries = json.data;
+            } catch {
+              // silent fail - doesn't affect main flow
+            } finally {
+              this.isLoadingSavedQueries = false;
+            }
+          },
+
+          applyQuery(sq) {
+            const q = sq.query || {};
+            this.selectedTags = q.tags || [];
+            this.excludedTags = q.not_tags || [];
+            this.searchQuery = q.q || '';
+            this.domainFilter = q.domain || '';
+            this.dateFrom = q.from || '';
+            this.dateTo = q.to || '';
+            this.fetchBookmarks();
+          },
+
+          async saveCurrentQuery(name) {
+            if (!name || this.isSavingQuery) return;
+            const query = {};
+            if (this.selectedTags.length) query.tags = [...this.selectedTags];
+            if (this.excludedTags) { if (this.excludedTags.length) query.not_tags = [...this.excludedTags]; }
+            if (this.searchQuery && this.searchQuery.trim()) query.q = this.searchQuery.trim();
+            if (this.domainFilter && this.domainFilter.trim()) query.domain = this.domainFilter.trim();
+            if (this.dateFrom) query.from = this.dateFrom;
+            if (this.dateTo) query.to = this.dateTo;
+            this.isSavingQuery = true;
+            try {
+              const res = await fetch(`${API_BASE}/api/saved-queries`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, query }),
+              });
+              if (!res.ok) throw new Error();
+              const json = await res.json();
+              this.savedQueries.unshift(json.data);
+              Alpine.store('alert').show('已保存为智能集合', 'success');
+            } catch {
+              Alpine.store('alert').show('保存失败', 'error');
+            } finally {
+              this.isSavingQuery = false;
+            }
+          },
+
+          async togglePinQuery(sq) {
+            if (this.processingQueryIds.has(sq.id)) return;
+            this.processingQueryIds.add(sq.id);
+            try {
+              const res = await fetch(`${API_BASE}/api/saved-queries/${sq.id}/pin`, { method: 'PATCH' });
+              if (!res.ok) throw new Error();
+              const json = await res.json();
+              const idx = this.savedQueries.findIndex(s => s.id === sq.id);
+              if (idx !== -1) this.savedQueries[idx] = json.data;
+              this.savedQueries.sort((a, b) => b.pinned - a.pinned);
+            } catch {
+              Alpine.store('alert').show('操作失败', 'error');
+            } finally {
+              this.processingQueryIds.delete(sq.id);
+            }
+          },
+
+          async deleteQuery(sq) {
+            if (this.processingQueryIds.has(sq.id)) return;
+            if (!confirm(`确认删除「${sq.name}」？`)) return;
+            this.processingQueryIds.add(sq.id);
+            try {
+              const res = await fetch(`${API_BASE}/api/saved-queries/${sq.id}`, { method: 'DELETE' });
+              if (!res.ok) throw new Error();
+              this.savedQueries = this.savedQueries.filter(s => s.id !== sq.id);
+            } catch {
+              Alpine.store('alert').show('删除失败', 'error');
+            } finally {
+              this.processingQueryIds.delete(sq.id);
+            }
+          },
+
           // ---- Save modal ----
 
           async handleEnrich() {
@@ -878,6 +1334,8 @@
               if (enrich.type) this.saveForm.type = enrich.type;
               const selectedSlugs = this.saveForm.selectedTags.map(t => t.slug);
               this.saveForm.suggestedTags = (enrich.tags || []).filter(t => !selectedSlugs.includes(t.slug));
+              this.saveForm._originalSuggestedTags = [...(this.saveForm.suggestedTags || [])];
+              this.saveForm._acceptedAiTags = [];
               Alpine.store('alert').show('AI 补全成功', 'success');
             } catch (e) {
               Alpine.store('alert').show(e?.message || 'AI 补全失败', 'error');
@@ -906,6 +1364,21 @@
               this.saveForm.selectedTags.push(found);
             }
             this.saveForm.suggestedTags = this.saveForm.suggestedTags.filter(t => t.slug !== tag.slug);
+            // Track accepted AI tag
+            this.saveForm._acceptedAiTags = this.saveForm._acceptedAiTags || [];
+            this.saveForm._acceptedAiTags.push({ slug: tag.slug, confidence: tag.confidence });
+            // Fire feedback immediately for existing bookmarks
+            if (this.saveForm.bookmarkId) {
+              fetch(`${API_BASE}/api/feedback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  bookmark_id: this.saveForm.bookmarkId,
+                  event_type: 'tag_accepted',
+                  payload: { tag_slug: tag.slug, confidence: tag.confidence },
+                }),
+              }).catch(() => {});
+            }
           },
 
           filterTagSuggestions() {
@@ -939,8 +1412,8 @@
                   body: JSON.stringify({ name })
                 });
                 if (!res.ok) throw new Error(`创建标签失败: HTTP ${res.status}`);
-                const data = await res.json();
-                tag = data.tag || data;
+                const json = await res.json();
+                tag = json.data;
                 this.allTags.push(tag);
               } catch (e) {
                 Alpine.store('alert').show(e?.message || '创建标签失败', 'error');
@@ -972,6 +1445,21 @@
                 body: JSON.stringify(payload)
               });
               if (!res.ok) throw new Error(`保存失败: HTTP ${res.status}`);
+              const json = await res.json();
+              // Fire feedback for accepted AI tags (new bookmark)
+              if (!this.saveForm.bookmarkId) {
+                for (const t of (this.saveForm._acceptedAiTags || [])) {
+                  fetch(`${API_BASE}/api/feedback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      bookmark_id: json.data.id,
+                      event_type: 'tag_accepted',
+                      payload: { tag_slug: t.slug, confidence: t.confidence },
+                    }),
+                  }).catch(() => {});
+                }
+              }
               this.resetSaveForm();
               this.$refs.saveModal.close();
               await this.fetchBookmarks();
@@ -1071,8 +1559,8 @@
                   body: JSON.stringify({ name })
                 });
                 if (!res.ok) throw new Error(`创建标签失败: HTTP ${res.status}`);
-                const data = await res.json();
-                tag = data.tag || data;
+                const json = await res.json();
+                tag = json.data;
                 this.allTags.push(tag);
               } catch (e) {
                 Alpine.store('alert').show(e?.message || '创建标签失败', 'error');
@@ -1099,8 +1587,8 @@
                 body: JSON.stringify({ name })
               });
               if (!res.ok) throw new Error(`创建失败: HTTP ${res.status}`);
-              const data = await res.json();
-              const tag = data.tag || data;
+              const json = await res.json();
+              const tag = json.data;
               this.allTags.push(tag);
               this.newTagName = '';
               Alpine.store('alert').show('标签创建成功', 'success');
@@ -1126,8 +1614,8 @@
                 body: JSON.stringify({ name })
               });
               if (!res.ok) throw new Error(`重命名失败: HTTP ${res.status}`);
-              const data = await res.json();
-              const updated = data.tag || data;
+              const json = await res.json();
+              const updated = json.data;
               const idx = this.allTags.findIndex(t => t.id === tag.id);
               if (idx !== -1) this.allTags[idx] = updated;
               this.editingTagId = null;
@@ -1148,6 +1636,82 @@
               Alpine.store('alert').show('标签已删除', 'success');
             } catch (e) {
               Alpine.store('alert').show(e?.message || '删除标签失败', 'error');
+            }
+          },
+
+          startMerge(tag) {
+            this.mergingTagId = tag.id;
+            this.mergeTargetId = '';
+          },
+
+          async handleMerge() {
+            if (!this.mergingTagId || !this.mergeTargetId || this.isMerging) return;
+            if (!confirm('合并后源标签将被删除，确认？')) return;
+            this.isMerging = true;
+            try {
+              const res = await fetch(`${API_BASE}/api/tags/${this.mergingTagId}/merge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_tag_id: this.mergeTargetId }),
+              });
+              if (!res.ok) throw new Error((await res.json()).error || '合并失败');
+              this.allTags = this.allTags.filter(t => t.id !== this.mergingTagId);
+              this.mergingTagId = null;
+              this.mergeTargetId = '';
+              await this.fetchBookmarks();
+              await this.fetchTags();
+              Alpine.store('alert').show('标签合并成功', 'success');
+            } catch (e) {
+              Alpine.store('alert').show(e?.message || '合并失败', 'error');
+            } finally {
+              this.isMerging = false;
+            }
+          },
+
+          async openAliasManager(tag) {
+            this.aliasTagId = tag.id;
+            this.aliasInput = '';
+            this.isLoadingAliases = true;
+            try {
+              const res = await fetch(`${API_BASE}/api/tags/${tag.id}/aliases`);
+              const json = await res.json();
+              this.tagAliases = json.data || [];
+            } catch {
+              this.tagAliases = [];
+            } finally {
+              this.isLoadingAliases = false;
+            }
+            this.$refs.aliasModal.showModal();
+          },
+
+          async handleAddAlias() {
+            const alias = this.aliasInput.trim();
+            if (!alias || this.isAddingAlias) return;
+            this.isAddingAlias = true;
+            try {
+              const res = await fetch(`${API_BASE}/api/tags/${this.aliasTagId}/aliases`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ alias }),
+              });
+              const json = await res.json();
+              if (!res.ok) throw new Error(json.error || '添加失败');
+              this.tagAliases.push(json.data);
+              this.aliasInput = '';
+            } catch (e) {
+              Alpine.store('alert').show(e?.message || '添加别名失败', 'error');
+            } finally {
+              this.isAddingAlias = false;
+            }
+          },
+
+          async handleDeleteAlias(alias) {
+            try {
+              const res = await fetch(`${API_BASE}/api/tags/${this.aliasTagId}/aliases/${alias.id}`, { method: 'DELETE' });
+              if (!res.ok) throw new Error();
+              this.tagAliases = this.tagAliases.filter(a => a.id !== alias.id);
+            } catch {
+              Alpine.store('alert').show('删除别名失败', 'error');
             }
           },
 

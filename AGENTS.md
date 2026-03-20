@@ -58,6 +58,19 @@ Linkgrove 是一个 Tag-first 个人书签管理工具，部署在 Cloudflare Wo
 - 响应统一格式：成功 `{ ok: true, data: ... }`，失败 `{ ok: false, error: '...' }`。
 - HTTP 状态码：200 成功、201 创建、400 参数错误、404 不存在、409 冲突、502 上游失败。
 
+### 已有路由（Task 2–4 新增）
+
+- `GET /api/tags/:id/aliases` — 获取标签别名列表
+- `POST /api/tags/:id/aliases` — 添加标签别名
+- `DELETE /api/tags/:id/aliases/:aliasId` — 删除标签别名
+- `POST /api/tags/:id/merge` — 将源标签合并到目标标签（body: `{ target_tag_id }`）
+- `GET /api/saved-queries` — 获取全部智能集合
+- `POST /api/saved-queries` — 创建智能集合
+- `PUT /api/saved-queries/:id` — 更新智能集合（name/query/sort_by/sort_dir）
+- `DELETE /api/saved-queries/:id` — 删除智能集合
+- `PATCH /api/saved-queries/:id/pin` — 切换智能集合置顶状态
+- `POST /api/feedback` — 上报 AI 标签推荐反馈事件（body: `{ bookmark_id, event_type, payload }`）
+
 ### 命令
 
 ```bash
@@ -117,6 +130,15 @@ CDN 引入顺序（不可调换）：
 - 新增表或字段必须创建新的迁移文件，禁止修改已有迁移文件。
 - 本地应用：`wrangler d1 migrations apply linkgrove --local`
 - 远端应用：`wrangler d1 migrations apply linkgrove --remote`
+
+### 已有表
+
+核心表：`bookmarks`、`tags`、`bookmark_tags`
+
+扩展表（Task 2–4 新增）：
+- `tag_aliases`：存储标签别名，关联 `tags.id`
+- `saved_queries`：存储用户保存的筛选集合（智能集合），含 `pinned` 字段
+- `user_feedback_events`：记录用户对 AI 推荐标签的接受/拒绝反馈事件
 
 ---
 

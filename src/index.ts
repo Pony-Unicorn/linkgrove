@@ -39,10 +39,45 @@ interface BookmarkTagTable {
   created_at: number
 }
 
+type AliasSource = 'user' | 'ai' | 'system'
+
+interface TagAliasTable {
+  id: string
+  alias: string
+  slug: string
+  tag_id: string
+  source: AliasSource
+  created_at: number
+}
+
+interface SavedQueryTable {
+  id: string
+  name: string
+  query_json: string
+  sort_by: string
+  sort_dir: string
+  pinned: number   // 0 | 1，SQLite 无 BOOLEAN
+  created_at: number
+  updated_at: number
+}
+
+type FeedbackEventType = 'tag_accepted' | 'tag_rejected' | 'tag_added' | 'tag_replaced'
+
+interface UserFeedbackEventTable {
+  id: string
+  bookmark_id: string
+  event_type: FeedbackEventType
+  payload: string  // JSON string
+  created_at: number
+}
+
 interface DB {
   bookmarks: BookmarkTable
   tags: TagTable
   bookmark_tags: BookmarkTagTable
+  tag_aliases: TagAliasTable
+  saved_queries: SavedQueryTable
+  user_feedback_events: UserFeedbackEventTable
 }
 
 function createDb(d1: D1Database) {
@@ -146,7 +181,7 @@ async function fetchPageMeta(url: string): Promise<{ title: string; description:
 
 // GET /api/bookmarks?q=&tags=a,b&domain=&limit=&offset=
 app.get('/api/bookmarks', async (c) => {
-  const { q = '', tags = '', domain = '', limit = '50', offset = '0' } = c.req.query()
+  const { q = '', tags = '', not_tags = '', domain = '', limit = '50', offset = '0', from = '', to = '' } = c.req.query()
   const db = createDb(c.env.DB)
   const lim = Math.min(parseInt(limit) || 50, 200)
   const off = parseInt(offset) || 0
@@ -186,6 +221,26 @@ app.get('/api/bookmarks', async (c) => {
       )
       .where(`tg${i}.slug` as any, '=', tagList[i])
   }
+
+  // NOT tags：用 NOT EXISTS 子查询排除含某 tag 的书签
+  const notTagList = not_tags ? not_tags.split(',').map((t: string) => t.trim()).filter(Boolean) : []
+  for (const notSlug of notTagList) {
+    query = query.where((eb) =>
+      eb.not(
+        eb.exists(
+          eb.selectFrom('bookmark_tags as nbt' as any)
+            .innerJoin('tags as ntg', 'ntg.id', 'nbt.tag_id' as any)
+            .select('nbt.bookmark_id' as any)
+            .whereRef('nbt.bookmark_id' as any, '=', 'b.id')
+            .where('nbt.status' as any, '=', 'active')
+            .where('ntg.slug' as any, '=', notSlug)
+        )
+      )
+    )
+  }
+
+  if (from) query = query.where('b.created_at', '>=', parseInt(from))
+  if (to) query = query.where('b.created_at', '<=', parseInt(to))
 
   if (q) {
     query = query.where((eb) =>
@@ -496,6 +551,204 @@ app.delete('/api/tags/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+// ── tag aliases & merge ──────────────────────────────────────────────────────
+
+// GET /api/tags/:id/aliases
+app.get('/api/tags/:id/aliases', async (c) => {
+  const tagId = c.req.param('id')
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('tags').select('id').where('id', '=', tagId).executeTakeFirst()
+  if (!existing) return c.json({ ok: false, error: 'tag not found' }, 404)
+  const aliases = await db.selectFrom('tag_aliases').selectAll().where('tag_id', '=', tagId).execute()
+  return c.json({ ok: true, data: aliases })
+})
+
+// POST /api/tags/:id/aliases  body: { alias: string }
+app.post('/api/tags/:id/aliases', async (c) => {
+  const tagId = c.req.param('id')
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body?.alias) return c.json({ ok: false, error: 'alias is required' }, 400)
+
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('tags').select('id').where('id', '=', tagId).executeTakeFirst()
+  if (!existing) return c.json({ ok: false, error: 'tag not found' }, 404)
+
+  const aliasText = (body.alias as string).trim()
+  const slug = toSlug(aliasText)
+  if (!slug) return c.json({ ok: false, error: 'invalid alias' }, 400)
+
+  // 检查 slug 是否已被 tag 或其他 alias 使用
+  const tagConflict = await db.selectFrom('tags').select('id').where('slug', '=', slug).executeTakeFirst()
+  if (tagConflict) return c.json({ ok: false, error: 'slug already used by a tag' }, 409)
+  const aliasConflict = await db.selectFrom('tag_aliases').select('id').where('slug', '=', slug).executeTakeFirst()
+  if (aliasConflict) return c.json({ ok: false, error: 'alias already exists' }, 409)
+
+  const id = generateId()
+  const ts = now()
+  await db.insertInto('tag_aliases').values({
+    id, alias: aliasText, slug, tag_id: tagId, source: 'user', created_at: ts,
+  }).execute()
+
+  const alias = await db.selectFrom('tag_aliases').selectAll().where('id', '=', id).executeTakeFirst()
+  return c.json({ ok: true, data: alias }, 201)
+})
+
+// DELETE /api/tags/:id/aliases/:aliasId
+app.delete('/api/tags/:id/aliases/:aliasId', async (c) => {
+  const tagId = c.req.param('id')
+  const aliasId = c.req.param('aliasId')
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('tag_aliases').select('id')
+    .where('id', '=', aliasId)
+    .where('tag_id', '=', tagId)
+    .executeTakeFirst()
+  if (!existing) return c.json({ ok: false, error: 'alias not found' }, 404)
+  await db.deleteFrom('tag_aliases').where('id', '=', aliasId).execute()
+  return c.json({ ok: true })
+})
+
+// POST /api/tags/:id/merge  body: { target_tag_id: string }
+// 将 :id 的所有 bookmark_tags 引用迁移到 target_tag_id，然后删除 :id
+app.post('/api/tags/:id/merge', async (c) => {
+  const sourceId = c.req.param('id')
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body?.target_tag_id) return c.json({ ok: false, error: 'target_tag_id is required' }, 400)
+  const targetId = body.target_tag_id as string
+  if (sourceId === targetId) return c.json({ ok: false, error: 'source and target must differ' }, 400)
+
+  const db = createDb(c.env.DB)
+  const source = await db.selectFrom('tags').select(['id', 'name']).where('id', '=', sourceId).executeTakeFirst()
+  if (!source) return c.json({ ok: false, error: 'source tag not found' }, 404)
+  const target = await db.selectFrom('tags').select(['id', 'name']).where('id', '=', targetId).executeTakeFirst()
+  if (!target) return c.json({ ok: false, error: 'target tag not found' }, 404)
+
+  await db.transaction().execute(async (trx) => {
+    // 获取 source 的所有书签关联
+    const sourceRefs = await trx.selectFrom('bookmark_tags').selectAll().where('tag_id', '=', sourceId).execute()
+
+    for (const ref of sourceRefs) {
+      // 检查 target 是否已有这个书签
+      const alreadyLinked = await trx
+        .selectFrom('bookmark_tags')
+        .select('bookmark_id')
+        .where('bookmark_id', '=', ref.bookmark_id)
+        .where('tag_id', '=', targetId)
+        .executeTakeFirst()
+      if (alreadyLinked) {
+        // 已存在就删掉 source 的引用
+        await trx.deleteFrom('bookmark_tags')
+          .where('bookmark_id', '=', ref.bookmark_id)
+          .where('tag_id', '=', sourceId)
+          .execute()
+      } else {
+        // 迁移到 target
+        await trx.updateTable('bookmark_tags')
+          .set({ tag_id: targetId })
+          .where('bookmark_id', '=', ref.bookmark_id)
+          .where('tag_id', '=', sourceId)
+          .execute()
+      }
+    }
+
+    // 将 source tag 的别名迁移到 target tag
+    await trx.updateTable('tag_aliases')
+      .set({ tag_id: targetId })
+      .where('tag_id', '=', sourceId)
+      .execute()
+
+    // 删除 source tag（cascade 会清理剩余关联，别名已迁移）
+    await trx.deleteFrom('tags').where('id', '=', sourceId).execute()
+  })
+
+  return c.json({ ok: true, data: { merged_into: targetId } })
+})
+
+// ── saved queries ──────────────────────────────────────────────────────────
+
+// GET /api/saved-queries
+app.get('/api/saved-queries', async (c) => {
+  const db = createDb(c.env.DB)
+  const results = await db
+    .selectFrom('saved_queries')
+    .selectAll()
+    .orderBy('pinned', 'desc')
+    .orderBy('updated_at', 'desc')
+    .execute()
+  // 将 query_json string 解析为对象返回
+  return c.json({ ok: true, data: results.map(r => ({ ...r, query: JSON.parse(r.query_json) })) })
+})
+
+// POST /api/saved-queries  body: { name, query: {...} }
+app.post('/api/saved-queries', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body?.name) return c.json({ ok: false, error: 'name is required' }, 400)
+  if (!body?.query || typeof body.query !== 'object') return c.json({ ok: false, error: 'query is required' }, 400)
+
+  const db = createDb(c.env.DB)
+  const id = generateId()
+  const ts = now()
+  await db.insertInto('saved_queries').values({
+    id,
+    name: (body.name as string).trim(),
+    query_json: JSON.stringify(body.query),
+    sort_by: (body.sort_by as string) || 'created_at',
+    sort_dir: (body.sort_dir as string) || 'desc',
+    pinned: 0,
+    created_at: ts,
+    updated_at: ts,
+  }).execute()
+
+  const sq = await db.selectFrom('saved_queries').selectAll().where('id', '=', id).executeTakeFirst()
+  if (!sq) return c.json({ ok: false, error: 'failed to create' }, 500)
+  return c.json({ ok: true, data: { ...sq, query: JSON.parse(sq.query_json) } }, 201)
+})
+
+// PUT /api/saved-queries/:id  body: { name?, query?, sort_by?, sort_dir? }
+app.put('/api/saved-queries/:id', async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body) return c.json({ ok: false, error: 'body required' }, 400)
+
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('saved_queries').selectAll().where('id', '=', id).executeTakeFirst()
+  if (!existing) return c.json({ ok: false, error: 'saved query not found' }, 404)
+
+  const ts = now()
+  await db.updateTable('saved_queries').set({
+    name: body.name ? (body.name as string).trim() : existing.name,
+    query_json: body.query ? JSON.stringify(body.query) : existing.query_json,
+    sort_by: (body.sort_by as string) || existing.sort_by,
+    sort_dir: (body.sort_dir as string) || existing.sort_dir,
+    updated_at: ts,
+  }).where('id', '=', id).execute()
+
+  const sq = await db.selectFrom('saved_queries').selectAll().where('id', '=', id).executeTakeFirst()
+  if (!sq) return c.json({ ok: false, error: 'not found' }, 404)
+  return c.json({ ok: true, data: { ...sq, query: JSON.parse(sq.query_json) } })
+})
+
+// PATCH /api/saved-queries/:id/pin  — toggle pinned
+app.patch('/api/saved-queries/:id/pin', async (c) => {
+  const id = c.req.param('id')
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('saved_queries').select(['id', 'pinned']).where('id', '=', id).executeTakeFirst()
+  if (!existing) return c.json({ ok: false, error: 'saved query not found' }, 404)
+  await db.updateTable('saved_queries').set({ pinned: existing.pinned ? 0 : 1, updated_at: now() }).where('id', '=', id).execute()
+  const sq = await db.selectFrom('saved_queries').selectAll().where('id', '=', id).executeTakeFirst()
+  if (!sq) return c.json({ ok: false, error: 'not found' }, 404)
+  return c.json({ ok: true, data: { ...sq, query: JSON.parse(sq.query_json) } })
+})
+
+// DELETE /api/saved-queries/:id
+app.delete('/api/saved-queries/:id', async (c) => {
+  const id = c.req.param('id')
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('saved_queries').select('id').where('id', '=', id).executeTakeFirst()
+  if (!existing) return c.json({ ok: false, error: 'saved query not found' }, 404)
+  await db.deleteFrom('saved_queries').where('id', '=', id).execute()
+  return c.json({ ok: true })
+})
+
 // ── AI ───────────────────────────────────────────────────────────────────────
 
 const AI_PROMPT = (title: string, description: string, url: string) =>
@@ -560,6 +813,36 @@ app.post('/api/ai/enrich', async (c) => {
     : []
 
   return c.json({ ok: true, data: { title, description, type, summary, tags } })
+})
+
+// ── feedback ──────────────────────────────────────────────────────────────
+
+// POST /api/feedback  body: { bookmark_id, event_type, payload? }
+app.post('/api/feedback', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body?.bookmark_id) return c.json({ ok: false, error: 'bookmark_id is required' }, 400)
+  if (!body?.event_type) return c.json({ ok: false, error: 'event_type is required' }, 400)
+
+  const validTypes: FeedbackEventType[] = ['tag_accepted', 'tag_rejected', 'tag_added', 'tag_replaced']
+  if (!validTypes.includes(body.event_type as FeedbackEventType)) {
+    return c.json({ ok: false, error: 'invalid event_type' }, 400)
+  }
+
+  const db = createDb(c.env.DB)
+  const bookmark = await db.selectFrom('bookmarks').select('id').where('id', '=', body.bookmark_id as string).executeTakeFirst()
+  if (!bookmark) return c.json({ ok: false, error: 'bookmark not found' }, 404)
+
+  const id = generateId()
+  const ts = now()
+  await db.insertInto('user_feedback_events').values({
+    id,
+    bookmark_id: body.bookmark_id as string,
+    event_type: body.event_type as FeedbackEventType,
+    payload: JSON.stringify(body.payload || {}),
+    created_at: ts,
+  }).execute()
+
+  return c.json({ ok: true, data: { id } }, 201)
 })
 
 // ── ping ─────────────────────────────────────────────────────────────────────
