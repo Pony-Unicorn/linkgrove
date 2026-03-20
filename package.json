@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
-		"cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types"
   },
   "dependencies": {
-    "hono": "^4.7.0"
+    "hono": "^4.7.0",
+    "kysely": "^0.28.14",
+    "kysely-d1": "^0.4.0"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

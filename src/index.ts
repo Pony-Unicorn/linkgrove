@@ -1,11 +1,61 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { Kysely } from 'kysely'
+import { D1Dialect } from 'kysely-d1'
+
+// ── DB schema types ─────────────────────────────────────────────────────────
+
+type BookmarkType = 'article' | 'video' | 'tool' | 'docs' | 'paper' | 'other'
+type TagSource = 'user' | 'ai' | 'rule'
+type TagStatus = 'active' | 'rejected'
+
+interface BookmarkTable {
+  id: string
+  url: string
+  canonical_url: string
+  title: string
+  domain: string
+  summary: string
+  note: string
+  type: BookmarkType
+  created_at: number
+  updated_at: number
+}
+
+interface TagTable {
+  id: string
+  name: string
+  slug: string
+  created_at: number
+  updated_at: number
+}
+
+interface BookmarkTagTable {
+  bookmark_id: string
+  tag_id: string
+  source: TagSource
+  confidence: number | null
+  status: TagStatus
+  created_at: number
+}
+
+interface DB {
+  bookmarks: BookmarkTable
+  tags: TagTable
+  bookmark_tags: BookmarkTagTable
+}
+
+function createDb(d1: D1Database) {
+  return new Kysely<DB>({ dialect: new D1Dialect({ database: d1 }) })
+}
+
+// ── app ─────────────────────────────────────────────────────────────────────
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
 app.use('/api/*', cors())
 
-// ── utils ──────────────────────────────────────────────────────────────────
+// ── utils ───────────────────────────────────────────────────────────────────
 
 function generateId(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -55,7 +105,7 @@ function now(): number {
   return Math.floor(Date.now() / 1000)
 }
 
-// ── page fetcher ───────────────────────────────────────────────────────────
+// ── page fetcher ─────────────────────────────────────────────────────────────
 
 async function fetchPageMeta(url: string): Promise<{ title: string; description: string }> {
   const meta = { title: '', description: '' }
@@ -92,18 +142,14 @@ async function fetchPageMeta(url: string): Promise<{ title: string; description:
   return meta
 }
 
-// ── bookmarks ──────────────────────────────────────────────────────────────
+// ── bookmarks ────────────────────────────────────────────────────────────────
 
 // GET /api/bookmarks?q=&tags=a,b&domain=&limit=&offset=
 app.get('/api/bookmarks', async (c) => {
   const { q = '', tags = '', domain = '', limit = '50', offset = '0' } = c.req.query()
-  const db = c.env.DB
+  const db = createDb(c.env.DB)
   const lim = Math.min(parseInt(limit) || 50, 200)
   const off = parseInt(offset) || 0
-
-  let sql = `SELECT DISTINCT b.id, b.url, b.title, b.domain, b.summary, b.type, b.note, b.created_at, b.updated_at FROM bookmarks b`
-  const params: (string | number)[] = []
-  const conditions: string[] = []
 
   const tagList = tags
     ? tags
@@ -111,44 +157,66 @@ app.get('/api/bookmarks', async (c) => {
         .map((t) => t.trim())
         .filter(Boolean)
     : []
+
+  let query = db
+    .selectFrom('bookmarks as b')
+    .select([
+      'b.id',
+      'b.url',
+      'b.title',
+      'b.domain',
+      'b.summary',
+      'b.type',
+      'b.note',
+      'b.created_at',
+      'b.updated_at',
+    ])
+    .distinct()
+    .orderBy('b.created_at', 'desc')
+    .limit(lim)
+    .offset(off)
+
   for (let i = 0; i < tagList.length; i++) {
-    sql += ` JOIN bookmark_tags bt${i} ON bt${i}.bookmark_id = b.id JOIN tags tg${i} ON tg${i}.id = bt${i}.tag_id AND bt${i}.status = 'active'`
-    conditions.push(`tg${i}.slug = ?`)
-    params.push(tagList[i])
+    query = query
+      .innerJoin(`bookmark_tags as bt${i}`, `bt${i}.bookmark_id`, 'b.id')
+      .innerJoin(`tags as tg${i}`, (join) =>
+        join
+          .onRef(`tg${i}.id`, '=', `bt${i}.tag_id` as any)
+          .on(`bt${i}.status` as any, '=', 'active')
+      )
+      .where(`tg${i}.slug` as any, '=', tagList[i])
   }
 
   if (q) {
-    conditions.push(`(b.title LIKE ? OR b.summary LIKE ? OR b.note LIKE ?)`)
-    params.push(`%${q}%`, `%${q}%`, `%${q}%`)
+    query = query.where((eb) =>
+      eb.or([
+        eb('b.title', 'like', `%${q}%`),
+        eb('b.summary', 'like', `%${q}%`),
+        eb('b.note', 'like', `%${q}%`),
+      ])
+    )
   }
-  if (domain) {
-    conditions.push(`b.domain = ?`)
-    params.push(domain)
-  }
-  if (conditions.length > 0) sql += ` WHERE ` + conditions.join(' AND ')
-  sql += ` ORDER BY b.created_at DESC LIMIT ? OFFSET ?`
-  params.push(lim, off)
+  if (domain) query = query.where('b.domain', '=', domain)
 
-  const { results } = await db
-    .prepare(sql)
-    .bind(...params)
-    .all<Record<string, unknown>>()
+  const bookmarks = await query.execute()
 
-  const ids = results.map((r) => r.id as string)
-  const tagMap: Record<string, unknown[]> = {}
+  // 批量查 tags
+  const ids = bookmarks.map((b) => b.id)
+  const tagMap: Record<
+    string,
+    { id: string; name: string; slug: string; source: string; confidence: number | null }[]
+  > = {}
   if (ids.length > 0) {
-    const { results: tagRows } = await db
-      .prepare(
-        `SELECT bt.bookmark_id, t.id, t.name, t.slug, bt.source, bt.confidence
-       FROM bookmark_tags bt JOIN tags t ON t.id = bt.tag_id
-       WHERE bt.bookmark_id IN (${ids.map(() => '?').join(',')}) AND bt.status = 'active'`
-      )
-      .bind(...ids)
-      .all<Record<string, unknown>>()
+    const tagRows = await db
+      .selectFrom('bookmark_tags as bt')
+      .innerJoin('tags as t', 't.id', 'bt.tag_id')
+      .select(['bt.bookmark_id', 't.id', 't.name', 't.slug', 'bt.source', 'bt.confidence'])
+      .where('bt.bookmark_id', 'in', ids)
+      .where('bt.status', '=', 'active')
+      .execute()
     for (const row of tagRows) {
-      const bid = row.bookmark_id as string
-      if (!tagMap[bid]) tagMap[bid] = []
-      tagMap[bid].push({
+      if (!tagMap[row.bookmark_id]) tagMap[row.bookmark_id] = []
+      tagMap[row.bookmark_id].push({
         id: row.id,
         name: row.name,
         slug: row.slug,
@@ -158,10 +226,7 @@ app.get('/api/bookmarks', async (c) => {
     }
   }
 
-  return c.json({
-    ok: true,
-    data: results.map((r) => ({ ...r, tags: tagMap[r.id as string] || [] })),
-  })
+  return c.json({ ok: true, data: bookmarks.map((b) => ({ ...b, tags: tagMap[b.id] || [] })) })
 })
 
 // POST /api/bookmarks
@@ -172,25 +237,21 @@ app.post('/api/bookmarks', async (c) => {
   let rawUrl = (body.url as string).trim()
   if (!/^https?:\/\//i.test(rawUrl)) rawUrl = 'https://' + rawUrl
 
-  const db = c.env.DB
+  const db = createDb(c.env.DB)
   const canonical = toCanonicalUrl(rawUrl)
   const ts = now()
   const id = generateId()
   const tagIds = (body.tag_ids as string[]) || []
 
-  const {
-    results: [dup],
-  } = await db
-    .prepare(`SELECT id, url, title FROM bookmarks WHERE canonical_url = ?`)
-    .bind(canonical)
-    .all()
+  const dup = await db
+    .selectFrom('bookmarks')
+    .select(['id', 'url', 'title'])
+    .where('canonical_url', '=', canonical)
+    .executeTakeFirst()
   if (dup) return c.json({ ok: false, error: 'bookmark already exists', existing: dup }, 409)
 
   if (tagIds.length > 0) {
-    const { results: validTags } = await db
-      .prepare(`SELECT id FROM tags WHERE id IN (${tagIds.map(() => '?').join(',')})`)
-      .bind(...tagIds)
-      .all<{ id: string }>()
+    const validTags = await db.selectFrom('tags').select('id').where('id', 'in', tagIds).execute()
     const validIds = new Set(validTags.map((t) => t.id))
     const invalid = tagIds.filter((id) => !validIds.has(id))
     if (invalid.length > 0)
@@ -198,35 +259,41 @@ app.post('/api/bookmarks', async (c) => {
   }
 
   await db
-    .prepare(
-      `INSERT INTO bookmarks (id, url, canonical_url, title, domain, summary, note, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(
+    .insertInto('bookmarks')
+    .values({
       id,
-      rawUrl,
-      canonical,
-      body.title || rawUrl,
-      extractDomain(rawUrl),
-      body.summary || '',
-      body.note || '',
-      body.type || 'other',
-      ts,
-      ts
-    )
-    .run()
+      url: rawUrl,
+      canonical_url: canonical,
+      title: (body.title as string) || rawUrl,
+      domain: extractDomain(rawUrl),
+      summary: (body.summary as string) || '',
+      note: (body.note as string) || '',
+      type: (body.type as BookmarkType) || 'other',
+      created_at: ts,
+      updated_at: ts,
+    })
+    .execute()
 
   for (const tagId of tagIds) {
     await db
-      .prepare(
-        `INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id, source, confidence, status, created_at) VALUES (?, ?, 'user', NULL, 'active', ?)`
-      )
-      .bind(id, tagId, ts)
-      .run()
+      .insertInto('bookmark_tags')
+      .values({
+        bookmark_id: id,
+        tag_id: tagId,
+        source: 'user',
+        confidence: null,
+        status: 'active',
+        created_at: ts,
+      })
+      .onConflict((oc) => oc.doNothing())
+      .execute()
   }
 
-  const {
-    results: [bookmark],
-  } = await db.prepare(`SELECT * FROM bookmarks WHERE id = ?`).bind(id).all()
+  const bookmark = await db
+    .selectFrom('bookmarks')
+    .selectAll()
+    .where('id', '=', id)
+    .executeTakeFirst()
   return c.json({ ok: true, data: bookmark }, 201)
 })
 
@@ -236,90 +303,111 @@ app.put('/api/bookmarks/:id', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
   if (!body) return c.json({ ok: false, error: 'body required' }, 400)
 
-  const db = c.env.DB
+  const db = createDb(c.env.DB)
   const ts = now()
-  const {
-    results: [existing],
-  } = await db
-    .prepare(`SELECT id, title FROM bookmarks WHERE id = ?`)
-    .bind(id)
-    .all<{ id: string; title: string }>()
+
+  const existing = await db
+    .selectFrom('bookmarks')
+    .select(['id', 'title'])
+    .where('id', '=', id)
+    .executeTakeFirst()
   if (!existing) return c.json({ ok: false, error: 'bookmark not found' }, 404)
 
   await db
-    .prepare(`UPDATE bookmarks SET title=?, summary=?, note=?, type=?, updated_at=? WHERE id=?`)
-    .bind(
-      body.title ?? existing.title,
-      body.summary || '',
-      body.note || '',
-      body.type || 'other',
-      ts,
-      id
-    )
-    .run()
+    .updateTable('bookmarks')
+    .set({
+      title: (body.title as string) ?? existing.title,
+      summary: (body.summary as string) || '',
+      note: (body.note as string) || '',
+      type: (body.type as BookmarkType) || 'other',
+      updated_at: ts,
+    })
+    .where('id', '=', id)
+    .execute()
 
   if (Array.isArray(body.tag_ids)) {
     const tagIds = body.tag_ids as string[]
     if (tagIds.length > 0) {
-      const { results: validTags } = await db
-        .prepare(`SELECT id FROM tags WHERE id IN (${tagIds.map(() => '?').join(',')})`)
-        .bind(...tagIds)
-        .all<{ id: string }>()
+      const validTags = await db.selectFrom('tags').select('id').where('id', 'in', tagIds).execute()
       const validIds = new Set(validTags.map((t) => t.id))
       const invalid = tagIds.filter((id) => !validIds.has(id))
       if (invalid.length > 0)
         return c.json({ ok: false, error: `invalid tag ids: ${invalid.join(', ')}` }, 400)
     }
     await db
-      .prepare(`DELETE FROM bookmark_tags WHERE bookmark_id = ? AND source = 'user'`)
-      .bind(id)
-      .run()
-    for (const tagId of body.tag_ids as string[]) {
+      .deleteFrom('bookmark_tags')
+      .where('bookmark_id', '=', id)
+      .where('source', '=', 'user')
+      .execute()
+    for (const tagId of tagIds) {
       await db
-        .prepare(
-          `INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id, source, confidence, status, created_at) VALUES (?, ?, 'user', NULL, 'active', ?)`
-        )
-        .bind(id, tagId, ts)
-        .run()
+        .insertInto('bookmark_tags')
+        .values({
+          bookmark_id: id,
+          tag_id: tagId,
+          source: 'user',
+          confidence: null,
+          status: 'active',
+          created_at: ts,
+        })
+        .onConflict((oc) => oc.doNothing())
+        .execute()
     }
   }
 
-  const {
-    results: [bookmark],
-  } = await db.prepare(`SELECT * FROM bookmarks WHERE id = ?`).bind(id).all()
+  const bookmark = await db
+    .selectFrom('bookmarks')
+    .selectAll()
+    .where('id', '=', id)
+    .executeTakeFirst()
   return c.json({ ok: true, data: bookmark })
 })
 
 // DELETE /api/bookmarks/:id
 app.delete('/api/bookmarks/:id', async (c) => {
   const id = c.req.param('id')
-  const db = c.env.DB
-  const {
-    results: [existing],
-  } = await db.prepare(`SELECT id FROM bookmarks WHERE id = ?`).bind(id).all()
+  const db = createDb(c.env.DB)
+  const existing = await db
+    .selectFrom('bookmarks')
+    .select('id')
+    .where('id', '=', id)
+    .executeTakeFirst()
   if (!existing) return c.json({ ok: false, error: 'bookmark not found' }, 404)
-  await db.prepare(`DELETE FROM bookmarks WHERE id = ?`).bind(id).run()
+  await db.deleteFrom('bookmarks').where('id', '=', id).execute()
   return c.json({ ok: true })
 })
 
-// ── tags ───────────────────────────────────────────────────────────────────
+// ── tags ─────────────────────────────────────────────────────────────────────
 
 // GET /api/tags?q=
 app.get('/api/tags', async (c) => {
   const { q = '' } = c.req.query()
-  const db = c.env.DB
-  let sql = `SELECT t.id, t.name, t.slug, t.created_at, COUNT(bt.tag_id) as usage_count
-             FROM tags t LEFT JOIN bookmark_tags bt ON bt.tag_id = t.id AND bt.status = 'active'`
-  const params: string[] = []
+  const db = createDb(c.env.DB)
+
+  let query = db
+    .selectFrom('tags as t')
+    .leftJoin('bookmark_tags as bt', (join) =>
+      join.onRef('bt.tag_id', '=', 't.id').on('bt.status', '=', 'active')
+    )
+    .select([
+      't.id',
+      't.name',
+      't.slug',
+      't.created_at',
+      db.fn.count<number>('bt.tag_id' as any).as('usage_count'),
+    ])
+    .groupBy('t.id')
+    .orderBy('usage_count', 'desc')
+    .orderBy('t.name', 'asc')
+    .limit(500)
+
   if (q) {
-    sql += ` WHERE t.name LIKE ? OR t.slug LIKE ?`
-    params.push(`%${q}%`, `%${q}%`)
+    query = query.where((eb) =>
+      eb.or([eb('t.name', 'like', `%${q}%`), eb('t.slug', 'like', `%${q}%`)])
+    )
   }
-  sql += ` GROUP BY t.id ORDER BY usage_count DESC, t.name ASC LIMIT 500`
-  const { results } = await db
-    .prepare(sql)
-    .bind(...params)
-    .all()
+
+  const results = await query.execute()
   return c.json({ ok: true, data: results })
 })
 
@@ -331,34 +419,39 @@ app.post('/api/tags', async (c) => {
   const slug = toSlug(body.name as string)
   if (!slug) return c.json({ ok: false, error: 'invalid tag name' }, 400)
 
-  const db = c.env.DB
-  const {
-    results: [existing],
-  } = await db.prepare(`SELECT * FROM tags WHERE slug = ?`).bind(slug).all<{ id: string }>()
+  const db = createDb(c.env.DB)
+  const existing = await db
+    .selectFrom('tags')
+    .select('id')
+    .where('slug', '=', slug)
+    .executeTakeFirst()
   if (existing) {
-    const {
-      results: [tag],
-    } = await db
-      .prepare(
-        `SELECT t.id, t.name, t.slug, t.created_at, t.updated_at, COUNT(bt.tag_id) as usage_count
-       FROM tags t LEFT JOIN bookmark_tags bt ON bt.tag_id = t.id AND bt.status = 'active'
-       WHERE t.id = ? GROUP BY t.id`
+    const tag = await db
+      .selectFrom('tags as t')
+      .leftJoin('bookmark_tags as bt', (join) =>
+        join.onRef('bt.tag_id', '=', 't.id').on('bt.status', '=', 'active')
       )
-      .bind(existing.id)
-      .all()
+      .select([
+        't.id',
+        't.name',
+        't.slug',
+        't.created_at',
+        't.updated_at',
+        db.fn.count<number>('bt.tag_id' as any).as('usage_count'),
+      ])
+      .where('t.id', '=', existing.id)
+      .groupBy('t.id')
+      .executeTakeFirst()
     return c.json({ ok: true, data: tag })
   }
 
   const id = generateId()
   const ts = now()
   await db
-    .prepare(`INSERT INTO tags (id, name, slug, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`)
-    .bind(id, (body.name as string).trim(), slug, ts, ts)
-    .run()
-
-  const {
-    results: [tag],
-  } = await db.prepare(`SELECT * FROM tags WHERE id = ?`).bind(id).all()
+    .insertInto('tags')
+    .values({ id, name: (body.name as string).trim(), slug, created_at: ts, updated_at: ts })
+    .execute()
+  const tag = await db.selectFrom('tags').selectAll().where('id', '=', id).executeTakeFirst()
   return c.json({ ok: true, data: tag }, 201)
 })
 
@@ -368,44 +461,42 @@ app.put('/api/tags/:id', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
   if (!body?.name) return c.json({ ok: false, error: 'name is required' }, 400)
 
-  const db = c.env.DB
-  const {
-    results: [existing],
-  } = await db.prepare(`SELECT id FROM tags WHERE id = ?`).bind(id).all()
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('tags').select('id').where('id', '=', id).executeTakeFirst()
   if (!existing) return c.json({ ok: false, error: 'tag not found' }, 404)
 
   const newSlug = toSlug(body.name as string)
   if (!newSlug) return c.json({ ok: false, error: 'invalid tag name' }, 400)
-  const {
-    results: [conflict],
-  } = await db.prepare(`SELECT id FROM tags WHERE slug = ? AND id != ?`).bind(newSlug, id).all()
+
+  const conflict = await db
+    .selectFrom('tags')
+    .select('id')
+    .where('slug', '=', newSlug)
+    .where('id', '!=', id)
+    .executeTakeFirst()
   if (conflict) return c.json({ ok: false, error: 'slug already exists' }, 409)
 
   const ts = now()
   await db
-    .prepare(`UPDATE tags SET name=?, slug=?, updated_at=? WHERE id=?`)
-    .bind((body.name as string).trim(), newSlug, ts, id)
-    .run()
-
-  const {
-    results: [tag],
-  } = await db.prepare(`SELECT * FROM tags WHERE id = ?`).bind(id).all()
+    .updateTable('tags')
+    .set({ name: (body.name as string).trim(), slug: newSlug, updated_at: ts })
+    .where('id', '=', id)
+    .execute()
+  const tag = await db.selectFrom('tags').selectAll().where('id', '=', id).executeTakeFirst()
   return c.json({ ok: true, data: tag })
 })
 
 // DELETE /api/tags/:id
 app.delete('/api/tags/:id', async (c) => {
   const id = c.req.param('id')
-  const db = c.env.DB
-  const {
-    results: [existing],
-  } = await db.prepare(`SELECT id FROM tags WHERE id = ?`).bind(id).all()
+  const db = createDb(c.env.DB)
+  const existing = await db.selectFrom('tags').select('id').where('id', '=', id).executeTakeFirst()
   if (!existing) return c.json({ ok: false, error: 'tag not found' }, 404)
-  await db.prepare(`DELETE FROM tags WHERE id = ?`).bind(id).run()
+  await db.deleteFrom('tags').where('id', '=', id).execute()
   return c.json({ ok: true })
 })
 
-// ── AI ─────────────────────────────────────────────────────────────────────
+// ── AI ───────────────────────────────────────────────────────────────────────
 
 const AI_PROMPT = (title: string, description: string, url: string) =>
   `
@@ -471,7 +562,7 @@ app.post('/api/ai/enrich', async (c) => {
   return c.json({ ok: true, data: { title, description, type, summary, tags } })
 })
 
-// ── ping ───────────────────────────────────────────────────────────────────
+// ── ping ─────────────────────────────────────────────────────────────────────
 
 app.get('/api/ping', (c) => c.json({ ok: true }))
 
