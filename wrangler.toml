@@ -1,6 +1,8 @@
 name = "linkgrove"
-main = "src/index.js"
+main = "src/index.ts"
 compatibility_date = "2026-02-24"
+workers_dev = false
+preview_urls = false
 
 [[routes]]
 pattern = "linkgrove.testbug.cc"
