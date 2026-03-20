@@ -903,6 +903,23 @@
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
       </dialog>
 
+      <!-- ==================== Confirm Dialog ==================== -->
+      <div
+        x-data
+        x-show="$store.confirm.visible"
+        x-transition.opacity
+        class="fixed inset-0 z-[100] flex items-center justify-center bg-black/40"
+        @keydown.escape.window="$store.confirm.cancel()"
+      >
+        <div class="bg-base-100 rounded-box shadow-xl p-6 w-80 flex flex-col gap-4">
+          <p class="text-sm" x-text="$store.confirm.message"></p>
+          <div class="flex justify-end gap-2">
+            <button class="btn btn-ghost btn-sm" @click="$store.confirm.cancel()">取消</button>
+            <button class="btn btn-error btn-sm" @click="$store.confirm.confirm()">确认</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ==================== Alias Management Modal ==================== -->
       <dialog x-ref="aliasModal" class="modal">
         <div class="modal-box w-11/12 max-w-md">
@@ -977,6 +994,25 @@
           dismiss() {
             clearTimeout(_alertTimer);
             this.visible = false;
+          }
+        });
+
+        Alpine.store('confirm', {
+          message: '',
+          visible: false,
+          _resolve: null,
+          open(msg) {
+            this.message = msg;
+            this.visible = true;
+            return new Promise(resolve => { this._resolve = resolve; });
+          },
+          confirm() {
+            this.visible = false;
+            if (this._resolve) { this._resolve(true); this._resolve = null; }
+          },
+          cancel() {
+            this.visible = false;
+            if (this._resolve) { this._resolve(false); this._resolve = null; }
           }
         });
 
@@ -1164,7 +1200,7 @@
 
           async handleBatchDelete() {
             if (!this.selectedBookmarkIds.length || this.isBatchDeleting) return;
-            if (!confirm(`确认删除选中的 ${this.selectedBookmarkIds.length} 个书签？`)) return;
+            if (!await Alpine.store('confirm').open(`确认删除选中的 ${this.selectedBookmarkIds.length} 个书签？`)) return;
             this.isBatchDeleting = true;
             try {
               await Promise.all(
@@ -1217,7 +1253,7 @@
           },
 
           async deleteBookmark(id) {
-            if (!confirm('确认删除这个书签？')) return;
+            if (!await Alpine.store('confirm').open('确认删除这个书签？')) return;
             try {
               const res = await fetch(`${API_BASE}/api/bookmarks/${id}`, { method: 'DELETE' });
               if (!res.ok) throw new Error(`删除失败: HTTP ${res.status}`);
@@ -1318,7 +1354,7 @@
 
           async deleteQuery(sq) {
             if (this.processingQueryIds.has(sq.id)) return;
-            if (!confirm(`确认删除「${sq.name}」？`)) return;
+            if (!await Alpine.store('confirm').open(`确认删除「${sq.name}」？`)) return;
             this.processingQueryIds.add(sq.id);
             try {
               const res = await fetch(`${API_BASE}/api/saved-queries/${sq.id}`, { method: 'DELETE' });
@@ -1642,7 +1678,7 @@
           },
 
           async handleDeleteTag(tag) {
-            if (!confirm(`确认删除标签「${tag.name}」？`)) return;
+            if (!await Alpine.store('confirm').open(`确认删除标签「${tag.name}」？`)) return;
             try {
               const res = await fetch(`${API_BASE}/api/tags/${tag.id}`, { method: 'DELETE' });
               if (!res.ok) throw new Error(`删除失败: HTTP ${res.status}`);
@@ -1662,7 +1698,7 @@
 
           async handleMerge() {
             if (!this.mergingTagId || !this.mergeTargetId || this.isMerging) return;
-            if (!confirm('合并后源标签将被删除，确认？')) return;
+            if (!await Alpine.store('confirm').open('合并后源标签将被删除，确认？')) return;
             this.isMerging = true;
             try {
               const res = await fetch(`${API_BASE}/api/tags/${this.mergingTagId}/merge`, {
