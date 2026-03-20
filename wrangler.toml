@@ -1,11 +1,10 @@
 name = "linkgrove"
 main = "src/index.js"
-compatibility_date = "2026-01-01"
+compatibility_date = "2026-02-24"
 compatibility_flags = ["nodejs_compat"]
 
 [assets]
 directory = "public"
-binding = "ASSETS"
 not_found_handling = "single-page-application"
 
 [[d1_databases]]
