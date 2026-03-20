@@ -2,6 +2,10 @@ name = "linkgrove"
 main = "src/index.js"
 compatibility_date = "2026-02-24"
 
+[[routes]]
+pattern = "linkgrove.testbug.cc"
+custom_domain = true
+
 [assets]
 directory = "public"
 not_found_handling = "single-page-application"
