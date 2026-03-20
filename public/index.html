@@ -215,18 +215,32 @@
               <div class="flex items-center justify-between">
                 <h2 class="font-semibold text-sm">智能集合</h2>
                 <button
+                  x-show="!showSaveQueryInput"
                   class="btn btn-ghost btn-xs"
                   title="保存当前筛选"
-                  :disabled="isSavingQuery"
-                  @click="
-                    const name = prompt('集合名称：');
-                    if (name && name.trim()) saveCurrentQuery(name.trim());
-                  "
+                  @click="showSaveQueryInput = true"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-3 h-3" aria-hidden="true">
                     <path d="M5 12h14"></path><path d="M12 5v14"></path>
                   </svg>
                 </button>
+              </div>
+              <div x-show="showSaveQueryInput" class="flex gap-1">
+                <input
+                  type="text"
+                  class="input input-bordered input-xs flex-1"
+                  placeholder="集合名称..."
+                  x-model="saveQueryName"
+                  x-effect="if (showSaveQueryInput) $nextTick(() => $el.focus())"
+                  @keydown.enter.prevent="if (saveQueryName.trim()) { saveCurrentQuery(saveQueryName.trim()); showSaveQueryInput = false; saveQueryName = ''; }"
+                  @keydown.escape="showSaveQueryInput = false; saveQueryName = ''"
+                />
+                <button
+                  class="btn btn-xs btn-primary shrink-0"
+                  :disabled="!saveQueryName.trim() || isSavingQuery"
+                  @click="saveCurrentQuery(saveQueryName.trim()); showSaveQueryInput = false; saveQueryName = ''"
+                >保存</button>
+                <button class="btn btn-xs btn-ghost shrink-0" @click="showSaveQueryInput = false; saveQueryName = ''">×</button>
               </div>
 
               <div x-show="isLoadingSavedQueries" class="space-y-2">
@@ -999,6 +1013,8 @@
           savedQueries: [],
           isLoadingSavedQueries: false,
           isSavingQuery: false,
+          showSaveQueryInput: false,
+          saveQueryName: '',
           processingQueryIds: new Set(),
 
           // Save modal state
