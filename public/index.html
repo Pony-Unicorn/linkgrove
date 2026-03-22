@@ -44,18 +44,25 @@
 
           <!-- Search -->
           <div class="flex-1 max-w-xl">
-            <label class="input input-sm w-full flex items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 opacity-50 shrink-0" aria-hidden="true">
-                <circle cx="11" cy="11" r="8"></circle>
-                <path d="m21 21-4.3-4.3"></path>
-              </svg>
+            <label class="input input-sm w-full flex items-center gap-1">
               <input
                 type="search"
                 placeholder="搜索书签..."
                 class="grow bg-transparent outline-none text-sm"
                 x-model="searchQuery"
-                @input.debounce.400ms="fetchBookmarks()"
+                @keydown.enter="fetchBookmarks()"
               />
+              <button
+                class="btn btn-ghost btn-xs btn-square shrink-0"
+                @click="fetchBookmarks()"
+                title="搜索"
+                aria-label="搜索"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.3-4.3"></path>
+                </svg>
+              </button>
             </label>
           </div>
 
